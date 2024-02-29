@@ -149,6 +149,8 @@ class PromptEmbedsPair:
 
 
 def load_prompts_from_yaml(path, attributes = []):
+    import os
+    os.chdir('/home/twei/Projects/sliders/')
     with open(path, "r") as f:
         prompts = yaml.safe_load(f)
     print(prompts)    

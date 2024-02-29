@@ -87,6 +87,7 @@ def train(
         multiplier=1.0,
         alpha=config.network.alpha,
         train_method=config.network.training_method,
+        lora_type=config.lora_type,
     ).to(device, dtype=weight_dtype)
 
     optimizer_module = train_util.get_optimizer(config.train.optimizer)
@@ -397,14 +398,15 @@ def main(args):
     if args.attributes is not None:
         attributes = args.attributes.split(',')
         attributes = [a.strip() for a in attributes]
-    
+    config.lora_type = args.lora_type
     config.network.alpha = args.alpha
     config.network.rank = args.rank
     config.save.name += f'_alpha{args.alpha}'
     config.save.name += f'_rank{config.network.rank }'
     config.save.name += f'_{config.network.training_method}'
+    config.save.name += f'_{config.lora_type}'
     config.save.path += f'/{config.save.name}'
-    
+
     prompts = prompt_util.load_prompts_from_yaml(config.prompts_file, attributes)
     print(prompts)
     device = torch.device(f"cuda:{args.device}")
@@ -415,14 +417,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config_file",
-        required=True,
+        required=False,
+        default = './trainscripts/textsliders/data/config-xl.yaml',
         help="Config file for training.",
     )
     # --config_file 'data/config.yaml'
     parser.add_argument(
         "--alpha",
         type=float,
-        required=True,
+        required=False,
         help="LoRA weight.",
     )
     # --alpha 1.0
@@ -446,7 +449,7 @@ if __name__ == "__main__":
         "--name",
         type=str,
         required=False,
-        default=None,
+        default='gener_slider',
         help="Name of trained concept",
     )
     # --name 'eyesize_slider'
@@ -454,8 +457,15 @@ if __name__ == "__main__":
         "--attributes",
         type=str,
         required=False,
-        default=None,
+        default='male, female',
         help="attritbutes to disentangle (comma seperated string)",
+    )
+    # --attributes 'male, female'
+    parser.add_argument(
+        "--lora_type",
+        type=str,
+        default="unet",
+        help="Select which architechture lora should be implemented, argument should be in ['unet', 'clip', 'mix']"
     )
     
     args = parser.parse_args()

@@ -59,6 +59,9 @@ class OtherConfig(BaseModel):
 
 class RootConfig(BaseModel):
     prompts_file: str
+    
+    lora_type:str = "unet"
+
     pretrained_model: PretrainedModelConfig
 
     network: NetworkConfig
