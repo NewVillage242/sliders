@@ -82,7 +82,7 @@ def train(
     unet.eval()
 
     network = LoRANetwork(
-        unet,
+        root_module=unet if config.lora_type == "unet" else text_encoders[0],
         rank=config.network.rank,
         multiplier=1.0,
         alpha=config.network.alpha,
@@ -161,6 +161,7 @@ def train(
     loss = None
 
     for i in pbar:
+        # inference_1
         with torch.no_grad():
             noise_scheduler.set_timesteps(
                 config.train.max_denoising_steps, device=device
@@ -202,7 +203,8 @@ def train(
                 dynamic_crops=prompt_pair.dynamic_crops,
                 dtype=weight_dtype,
             ).to(device, dtype=weight_dtype)
-
+            
+            # LoRA 在這才有權重，離開後就不是lora
             with network:
                 # ちょっとデノイズされれたものが返る
                 denoised_latents = train_util.diffusion_xl(
@@ -300,6 +302,7 @@ def train(
                 print("neutral_latents:", neutral_latents[0, 0, :5, :5])
                 print("unconditional_latents:", unconditional_latents[0, 0, :5, :5])
 
+        # 
         with network:
             target_latents = train_util.predict_noise_xl(
                 unet,

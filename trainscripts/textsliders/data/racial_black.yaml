@@ -1,0 +1,60 @@
+- target: female person
+  positive: female black person
+  unconditional: female white person
+  neutral: female person
+  guidance: 4
+  rank: 4
+  action: enhance
+  resolution: 512
+  dynamic_resolution: false
+  batch_size: 1
+- target: female person
+  positive: female black person
+  unconditional: female Asian person
+  neutral: female person
+  guidance: 4
+  rank: 4
+  action: enhance
+  resolution: 512
+  dynamic_resolution: false
+  batch_size: 1
+- target: female person
+  positive: female black person
+  unconditional: female India person
+  neutral: female person
+  guidance: 4
+  rank: 4
+  action: enhance
+  resolution: 512
+  dynamic_resolution: false
+  batch_size: 1
+- target: male person
+  positive: male black person
+  unconditional: male white person
+  neutral: male person
+  guidance: 4
+  rank: 4
+  action: enhance
+  resolution: 512
+  dynamic_resolution: false
+  batch_size: 1
+- target: male person
+  positive: male black person
+  unconditional: male Asian person
+  neutral: male person
+  guidance: 4
+  rank: 4
+  action: enhance
+  resolution: 512
+  dynamic_resolution: false
+  batch_size: 1
+- target: male person
+  positive: male black person
+  unconditional: male India person
+  neutral: male person
+  guidance: 4
+  rank: 4
+  action: enhance
+  resolution: 512
+  dynamic_resolution: false
+  batch_size: 1

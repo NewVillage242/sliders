@@ -8,6 +8,12 @@ from diffusers import UNet2DConditionModel, SchedulerMixin
 from model_util import SDXL_TEXT_ENCODER_TYPE
 
 from tqdm import tqdm
+from prompt_util import (
+    PromptEmbedsCache,
+    PromptEmbedsPair,
+    PromptSettings,
+    PromptEmbedsXL,
+)
 
 UNET_IN_CHANNELS = 4  # Stable Diffusion の in_channels は 4 で固定。XLも同じ。
 VAE_SCALE_FACTOR = 8  # 2 ** (len(vae.config.block_out_channels) - 1) = 8
@@ -58,8 +64,7 @@ def get_initial_latents(
 
 
 def text_tokenize(
-    tokenizer: CLIPTokenizer,  # 普通ならひとつ、XLならふたつ！
-    prompts: list[str],
+    tokenizer: CLIPTokenizer, prompts: list[str],  # 普通ならひとつ、XLならふたつ！
 ):
     return tokenizer(
         prompts,
@@ -75,15 +80,11 @@ def text_encode(text_encoder: CLIPTextModel, tokens):
 
 
 def encode_prompts(
-    tokenizer: CLIPTokenizer,
-    text_encoder: CLIPTokenizer,
-    prompts: list[str],
+    tokenizer: CLIPTokenizer, text_encoder: CLIPTokenizer, prompts: list[str],
 ):
 
     text_tokens = text_tokenize(tokenizer, prompts)
     text_embeddings = text_encode(text_encoder, text_tokens)
-    
-    
 
     return text_embeddings
 
@@ -106,6 +107,24 @@ def text_encode_xl(
 
     return prompt_embeds, pooled_prompt_embeds
 
+def encode_prompts(
+    tokenizer: CLIPTokenizer,
+    text_encoder: SDXL_TEXT_ENCODER_TYPE,
+    prompts: list[str],
+    num_images_per_prompt: int = 1,
+):
+    text_embeds_list = []
+    pooled_text_embeds = None  # always text_encoder_2's pool
+
+    
+    text_tokens_input_ids = text_tokenize(tokenizer, prompts)
+    text_embeds, pooled_text_embeds = text_encode_xl(
+        text_encoder, text_tokens_input_ids, num_images_per_prompt
+    )
+
+    text_embeds_list.append(text_embeds)
+
+    return torch.concat(text_embeds_list, dim=-1), pooled_text_embeds
 
 def encode_prompts_xl(
     tokenizers: list[CLIPTokenizer],
@@ -134,9 +153,7 @@ def encode_prompts_xl(
 
 
 def concat_embeddings(
-    unconditional: torch.FloatTensor,
-    conditional: torch.FloatTensor,
-    n_imgs: int,
+    unconditional: torch.FloatTensor, conditional: torch.FloatTensor, n_imgs: int,
 ):
     return torch.cat([unconditional, conditional]).repeat_interleave(n_imgs, dim=0)
 
@@ -157,9 +174,7 @@ def predict_noise(
 
     # predict the noise residual
     noise_pred = unet(
-        latent_model_input,
-        timestep,
-        encoder_hidden_states=text_embeddings,
+        latent_model_input, timestep, encoder_hidden_states=text_embeddings,
     ).sample
 
     # perform guidance
@@ -293,6 +308,56 @@ def diffusion_xl(
     # return latents_steps
     return latents
 
+def clip_simple(
+    textEncoders: list[CLIPTextModel],
+    tokenizers: list[CLIPTokenizer],
+    promptPair: PromptSettings,
+):
+    prompt = promptPair.target
+    embedding = encode_prompts(tokenizers, textEncoders, [prompt])
+    return embedding
+
+def clip_xl(
+    textEncoders: list[CLIPTextModel],
+    tokenizers: list[CLIPTokenizer],
+    promptPair: PromptSettings,
+):
+    prompt = promptPair.target
+    embedding = encode_prompts_xl(tokenizers, textEncoders, [prompt])
+    return embedding
+
+def clip_conditional(
+    textEncoder: CLIPTextModel,
+    tokenizer: CLIPTokenizer,
+    promptPair: PromptSettings,
+    condition: str,
+):
+    prompt: str = ""
+    if condition == "positive":
+        prompt = promptPair.positive
+    elif condition == "negative":
+        prompt = promptPair.unconditional
+    elif condition == "neutral":
+        prompt = promptPair.neutral
+    embedding = encode_prompts(tokenizer, textEncoder, [prompt])
+    return embedding
+
+def clip_xl_conditional(
+    textEncoders: list[CLIPTextModel],
+    tokenizers: list[CLIPTokenizer],
+    promptPair: PromptSettings,
+    condition: str,
+):
+    prompt: str = ""
+    if condition == "positive":
+        prompt = promptPair.positive
+    elif condition == "negative":
+        prompt = promptPair.unconditional
+    elif condition == "neutral":
+        prompt = promptPair.neutral
+    embedding = encode_prompts_xl(tokenizers, textEncoders, [prompt])
+    return embedding
+
 
 # for XL
 def get_add_time_ids(
@@ -367,7 +432,7 @@ def get_optimizer(name: str):
             return Lion
         elif name == "prodigy":
             import prodigyopt
-            
+
             return prodigyopt.Prodigy
         else:
             raise ValueError("Optimizer must be adam, adamw, lion or Prodigy")
@@ -417,3 +482,19 @@ def get_random_resolution_in_bucket(bucket_resolution: int = 512) -> tuple[int, 
     width = torch.randint(min_step, max_step, (1,)).item() * step
 
     return height, width
+
+
+def clip_loss(
+    final_embedded, positive_embedding, neutral_embedding, negative_embedding,
+):
+    eta = 1.0
+
+    if len(positive_embedding) == 2:
+        target_embedding = neutral_embedding[0] + eta * (positive_embedding[0] - negative_embedding[0])
+    else:
+        target_embedding = neutral_embedding + eta (positive_embedding - negative_embedding)
+
+    criteria = torch.nn.MSELoss()
+    if len(final_embedded) == 2:
+        final_embedded = final_embedded[0]
+    return criteria(final_embedded, target_embedding)

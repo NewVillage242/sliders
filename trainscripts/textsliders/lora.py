@@ -11,6 +11,9 @@ import torch.nn as nn
 from diffusers import UNet2DConditionModel
 from safetensors.torch import save_file
 
+from diffusers.loaders import AttnProcsLayers
+from diffusers.models.attention_processor import LoRAAttnProcessor
+from transformers import CLIPTextModel, CLIPTokenizer
 
 UNET_TARGET_REPLACE_MODULE_TRANSFORMER = [
 #     "Transformer2DModel",  # どうやらこっちの方らしい？ # attn1, 2
@@ -26,6 +29,10 @@ UNET_TARGET_REPLACE_MODULE_CONV = [
 ]  # locon, 3clier
 
 LORA_PREFIX_UNET = "lora_unet"
+
+LORA_PREFIX_TEXT_ENCODER="lora_te"
+LORA_PREFIX_TEXT_ENCODER1 = "lora_te1"
+LORA_PREFIX_TEXT_ENCODER2 = "lora_te2"
 
 DEFAULT_TARGET_REPLACE = UNET_TARGET_REPLACE_MODULE_TRANSFORMER
 
@@ -115,7 +122,7 @@ class LoRAModule(nn.Module):
 class LoRANetwork(nn.Module):
     def __init__(
         self,
-        unet: UNet2DConditionModel,
+        root_module: nn.Module,
         rank: int = 4,
         multiplier: float = 1.0,
         alpha: float = 1.0,
@@ -130,41 +137,50 @@ class LoRANetwork(nn.Module):
 
         # LoRAのみ
         self.module = LoRAModule
-
+        print("LoRANetwork")
         if lora_type == "unet":
             # unetのloraを作る
-            self.unet_loras = self.create_modules(
+            self.loras = self.create_modules(
                 LORA_PREFIX_UNET,
-                unet,
+                root_module,
                 DEFAULT_TARGET_REPLACE,
                 self.lora_dim,
                 self.multiplier,
                 train_method=train_method,
             )
-            print(f"create LoRA for U-Net: {len(self.unet_loras)} modules.")
+            print(f"create LoRA for U-Net: {len(self.loras)} modules.")
         elif lora_type == "clip":
-            pass
+            # clipのloraを作る
+            self.loras = self.create_modules_clip(
+                LORA_PREFIX_TEXT_ENCODER,
+                root_module,
+                DEFAULT_TARGET_REPLACE,
+                self.lora_dim,
+                self.multiplier,
+                train_method=train_method,
+            )
+            print(f"create LoRA for Clip: {len(self.loras)} modules.")
         elif lora_type == "mix":
             pass
 
 
         # assertion 名前の被りがないか確認しているようだ
         lora_names = set()
-        for lora in self.unet_loras:
+        for lora in self.loras:
             assert (
                 lora.lora_name not in lora_names
             ), f"duplicated lora name: {lora.lora_name}. {lora_names}"
             lora_names.add(lora.lora_name)
 
         # 適用する
-        for lora in self.unet_loras:
+        for lora in self.loras:
             lora.apply_to()
             self.add_module(
                 lora.lora_name,
                 lora,
             )
 
-        del unet
+        del root_module
 
         torch.cuda.empty_cache()
 
@@ -223,13 +239,90 @@ class LoRANetwork(nn.Module):
                             names.append(lora_name)
 #         print(f'@@@@@@@@@@@@@@@@@@@@@@@@@@@@ \n {names}')
         return loras
+    def create_modules_clip_simple(
+        self,
+        prefix: str,
+        root_module: nn.Module,
+        target_replace_modules: List[str],
+        rank: int,
+        multiplier: float,
+        train_method: TRAINING_METHODS,
+    ) -> list:
+        loras = []
+        names = []
+        TEXT_ENCODER_TARGET_MODULES = ["q_proj", "v_proj"]
+        for name, module in root_module.named_modules():
+            if any([x in name for x in TEXT_ENCODER_TARGET_MODULES]):
+                for child_name, child_module in module.named_modules():
+                    if child_module.__class__.__name__ in ["Linear", "Conv2d", "LoRACompatibleLinear", "LoRACompatibleConv"]:
+                        if train_method == 'xattn-strict':
+                            if 'out' in child_name:
+                                continue
+                        if train_method == 'noxattn-hspace':
+                            if 'mid_block' not in name:
+                                continue
+                        if train_method == 'noxattn-hspace-last':
+                            if 'mid_block' not in name or '.1' not in name or 'conv2' not in child_name:
+                                continue
+                        lora_name = prefix  + "." + name + "." + child_name
+                        lora_name = lora_name.replace(".", "_")
+                        lora = self.module(
+                            lora_name, child_module, multiplier, rank, self.alpha
+                        )
+                        if lora_name not in names:
+                            loras.append(lora)
+                            names.append(lora_name)
+                
+        return loras
 
+    def create_modules_clip(
+        self,
+        prefix: str,
+        root_modules: nn.Module,
+        target_replace_modules: List[str],
+        rank: int,
+        multiplier: float,
+        train_method: TRAINING_METHODS,
+    ) -> list:
+        loras = []
+        names = []
+        if isinstance(root_modules, CLIPTextModel):
+            return self.create_modules_clip_simple(prefix,root_modules,target_replace_modules,rank,multiplier,train_method)
+        TEXT_ENCODER_TARGET_MODULES = ["q_proj", "v_proj"]
+        for i, root_module in enumerate(root_modules):
+            for name, module in root_module.named_modules():
+                if any([x in name for x in TEXT_ENCODER_TARGET_MODULES]):
+                    for child_name, child_module in module.named_modules():
+                        if child_module.__class__.__name__ in ["Linear", "Conv2d", "LoRACompatibleLinear", "LoRACompatibleConv"]:
+                            if train_method == 'xattn-strict':
+                                if 'out' in child_name:
+                                    continue
+                            if train_method == 'noxattn-hspace':
+                                if 'mid_block' not in name:
+                                    continue
+                            if train_method == 'noxattn-hspace-last':
+                                if 'mid_block' not in name or '.1' not in name or 'conv2' not in child_name:
+                                    continue
+                            lora_name = prefix + f"{i+1}" + "." + name + "." + child_name
+                            lora_name = lora_name.replace(".", "_")
+    #                         print(f"{lora_name}")
+                            lora = self.module(
+                                lora_name, child_module, multiplier, rank, self.alpha
+                            )
+    #                         print(name, child_name)
+    #                         print(child_module.weight.shape)
+                            if lora_name not in names:
+                                loras.append(lora)
+                                names.append(lora_name)
+                
+#         print(f'@@@@@@@@@@@@@@@@@@@@@@@@@@@@ \n {names}')
+        return loras
     def prepare_optimizer_params(self):
         all_params = []
 
-        if self.unet_loras:  # 実質これしかない
+        if self.loras:  # 実質これしかない
             params = []
-            [params.extend(lora.parameters()) for lora in self.unet_loras]
+            [params.extend(lora.parameters()) for lora in self.loras]
             param_data = {"params": params}
             all_params.append(param_data)
 
@@ -257,9 +350,9 @@ class LoRANetwork(nn.Module):
         self.lora_scale = scale
 
     def __enter__(self):
-        for lora in self.unet_loras:
+        for lora in self.loras:
             lora.multiplier = 1.0 * self.lora_scale
 
     def __exit__(self, exc_type, exc_value, tb):
-        for lora in self.unet_loras:
+        for lora in self.loras:
             lora.multiplier = 0
